@@ -19,7 +19,7 @@ This file serves two purposes depending on who reads it:
 ## Setup
 
 1. `cd autoresearch && uv sync && uv run prepare.py && cd ..`
-2. Run baseline: `cd autoresearch && uv run train.py > run.log 2>&1 && python ../judge.py && cd ..`
+2. Run baseline: `cd autoresearch && uv run train.py > run.log 2>&1 && uv run python ../judge.py && cd ..`
 3. Record: `python db.py record --hypothesis "baseline" --category other --outcome keep`
 
 ## Inner loop (edit train.py)
@@ -35,15 +35,14 @@ LOOP FOREVER:
 1. Check history: `python db.py show --last 20`
 2. Edit `autoresearch/train.py` with an idea.
 3. `cd autoresearch && git add train.py && git commit -m "experiment: <desc>" && cd ..`
-4. `cd autoresearch && rm -f checkpoint.pt checkpoint_config.json metrics.json`
-5. `uv run train.py > run.log 2>&1`
-6. If `metrics.json` missing: crashed. Check `tail -n 50 run.log`.
-7. `python ../judge.py >> run.log 2>&1`
-8. `cat metrics.json`
-9. Improvement must exceed noise_threshold to count.
-10. `cd .. && python db.py record --hypothesis "<desc>" --category <cat> --outcome <keep|discard|crash>`
-11. If improved: commit stays.
-12. If not: `cd autoresearch && git reset --hard HEAD~1 && cd ..`
+4. `cd autoresearch && rm -f checkpoint.pt checkpoint_config.json metrics.json && uv run train.py > run.log 2>&1 && cd ..`
+5. If `autoresearch/metrics.json` missing: crashed. Check `tail -n 50 autoresearch/run.log`.
+6. `cd autoresearch && uv run python ../judge.py >> run.log 2>&1 && cd ..`
+7. `cat autoresearch/metrics.json` — check val_bpb.
+8. Improvement must exceed noise_threshold to count.
+9. `python db.py record --hypothesis "<desc>" --category <cat> --outcome <keep|discard|crash>`
+10. If improved: commit stays.
+11. If not: `cd autoresearch && git reset --hard HEAD~1 && cd ..`
 
 **Simplicity criterion**: simpler is better. Small gain + ugly complexity = not worth it.
 

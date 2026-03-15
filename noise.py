@@ -45,7 +45,7 @@ def run_once(run_idx):
 
     print(f"  Run {run_idx}: judging...", flush=True)
     result = subprocess.run(
-        ["python", "../judge.py"], cwd=PROJECT_DIR,
+        ["uv", "run", "python", "../judge.py"], cwd=PROJECT_DIR,
         capture_output=True, text=True, timeout=300,
     )
     with open(log_file, "a") as f:

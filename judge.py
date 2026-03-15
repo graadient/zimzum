@@ -76,13 +76,20 @@ def evaluate_bpb(model, tokenizer, batch_size):
     return total_nats / (math.log(2) * total_bytes)
 
 
+def _write_error(status, error=None):
+    result = {"val_bpb": None, "status": status}
+    if error:
+        result["error"] = str(error)
+    with open("metrics.json", "w") as f:
+        json.dump(result, f, indent=2)
+
+
 def main():
     t0 = time.time()
 
     if not verify_surface(["train.py"]):
         print("Aborting — forbidden files modified.")
-        with open("metrics.json", "w") as f:
-            json.dump({"val_bpb": None, "status": "surface_violation"}, f, indent=2)
+        _write_error("surface_violation")
         return
 
     with open("checkpoint_config.json") as f:
@@ -92,8 +99,7 @@ def main():
         from train import GPT, GPTConfig
     except Exception as e:
         print(f"JUDGE ERROR: {e}")
-        with open("metrics.json", "w") as f:
-            json.dump({"val_bpb": None, "status": "judge_error", "error": str(e)}, f, indent=2)
+        _write_error("judge_error", e)
         return
 
     device = torch.device("cuda")
@@ -113,8 +119,7 @@ def main():
         val_bpb = evaluate_bpb(model, tokenizer, 128)
     except Exception as e:
         print(f"JUDGE ERROR: {e}")
-        with open("metrics.json", "w") as f:
-            json.dump({"val_bpb": None, "status": "judge_error", "error": str(e)}, f, indent=2)
+        _write_error("judge_error", e)
         return
 
     t1 = time.time()
