@@ -96,14 +96,20 @@ def main():
     variance = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
     std = math.sqrt(variance)
 
-    # Approximate t-critical via Cornish-Fisher expansion
-    # norm_ppf for the given alpha
-    p = 1 - args.alpha / 2
-    t = math.sqrt(-2 * math.log(1 - p))
-    z = t - (2.515517 + 0.802853 * t + 0.010328 * t**2) / (1 + 1.432788 * t + 0.189269 * t**2 + 0.001308 * t**3)
+    # t-critical value for the given alpha and df
     df = len(values) - 1
-    z += (z**3 + z) / (4 * df) + (5 * z**5 + 16 * z**3 + 3 * z) / (96 * df**2)
-    mde = z * std * math.sqrt(2 / len(values))
+    # Exact values for small df (Cornish-Fisher is >5% off for df<=4)
+    T_TABLE_005 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571}
+    if args.alpha == 0.05 and df in T_TABLE_005:
+        t_crit = T_TABLE_005[df]
+    else:
+        # Cornish-Fisher approximation (accurate for df >= 5)
+        p = 1 - args.alpha / 2
+        t = math.sqrt(-2 * math.log(1 - p))
+        z = t - (2.515517 + 0.802853 * t + 0.010328 * t**2) / (1 + 1.432788 * t + 0.189269 * t**2 + 0.001308 * t**3)
+        z += (z**3 + z) / (4 * df) + (5 * z**5 + 16 * z**3 + 3 * z) / (96 * df**2)
+        t_crit = z
+    mde = t_crit * std * math.sqrt(2 / len(values))
 
     print(f"\nmean={mean:.6f}  std={std:.6f}  MDE={mde:.6f}")
     print(f"Improvements must be > {mde:.6f} val_bpb to beat noise.")
