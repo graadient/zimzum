@@ -21,6 +21,7 @@ dev/
 
 # Results and artifacts
 results.tsv
+experiments.db
 checkpoint.pt
 checkpoint_config.json
 metrics.json

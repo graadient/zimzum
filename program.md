@@ -91,19 +91,22 @@ uv run db.py show --last 10                 # most recent 10
 
 The experiment runs on a dedicated branch (e.g. `zimzum/mar5`).
 
+**Important**: `experiments.db` is gitignored and never committed. It lives outside git's blast radius so that `git reset --hard` cannot wipe experiment history. All evidence is preserved — winners, losers, and crashes.
+
 LOOP FOREVER:
 
 1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
+2. Tune `train.py` with an experimental idea by directly hacking the code. **Only edit train.py. Do not touch prepare.py, judge.py, or db.py.**
 3. `git add train.py && git commit -m "experiment: <description>"`
 4. Clean stale artifacts: `rm -f checkpoint.pt checkpoint_config.json metrics.json`
 5. Run training: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
 6. Check for crash: if `metrics.json` is missing or its `status` is not `"ok"`, the run crashed. Run `tail -n 50 run.log` to read the stack trace and attempt a fix.
-7. Run the judge: `uv run judge.py >> run.log 2>&1`
+7. Run the judge: `uv run judge.py >> run.log 2>&1` — the judge verifies only `train.py` was modified, then evaluates the checkpoint. If it reports a surface violation, treat the run as a crash.
 8. Read results: `python3 -c "import json; m=json.load(open('metrics.json')); print(f'val_bpb: {m[\"val_bpb\"]:.6f} | peak_vram_mb: {m[\"peak_vram_mb\"]:.1f}')"`
-9. Record the result: `uv run db.py record --hypothesis "<description>" --category <cat> --outcome <keep|discard|crash>`
-10. If val_bpb improved (lower): `git add train.py experiments.db && git commit --amend --no-edit` to advance the branch
-11. If val_bpb is equal or worse: record the discard commit hash, then `git reset --hard <previous kept commit>` to discard it cleanly
+9. **Decide keep or discard**: An improvement counts only if `val_bpb` dropped by more than **0.001** (the noise threshold — adjust after running `measure_noise.py`). Improvements smaller than this are indistinguishable from hardware noise.
+10. Record the result: `uv run db.py record --hypothesis "<description>" --category <cat> --outcome <keep|discard|crash>`
+11. If val_bpb improved beyond threshold: the commit stays — the branch has advanced.
+12. If val_bpb did not improve enough, or got worse: `git reset --hard HEAD~1` to discard the commit cleanly. The experiment is still preserved in `experiments.db`.
 
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
 

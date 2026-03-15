@@ -49,7 +49,12 @@ Then point Claude Code (or another coding agent) at `program.md` and let it run 
 
 ## Trust boundary
 
-The candidate (`train.py`) trains and saves a checkpoint but never reports its own `val_bpb`. The immutable `judge.py` loads the checkpoint and computes the score using `evaluate_bpb` from `prepare.py`. The agent reads structured `metrics.json`, not its own stdout. This prevents the candidate from faking results.
+The candidate (`train.py`) trains and saves a checkpoint but never reports its own `val_bpb`. The judge calls `model(x)` to get logits — **eval targets are never passed to candidate code**. Cross-entropy loss is computed entirely inside `judge.py`. The agent reads structured `metrics.json`, not its own stdout.
+
+Additional safeguards:
+- `judge.py` verifies only `train.py` was modified (surface check). If `prepare.py`, `judge.py`, or `db.py` were touched, the run is rejected.
+- `experiments.db` is gitignored — `git reset --hard` cannot wipe experiment history.
+- Improvements must exceed a noise threshold (default 0.001 val_bpb) to be kept.
 
 ## Noise measurement
 
