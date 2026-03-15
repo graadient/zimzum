@@ -9,6 +9,7 @@ Usage: uv run judge.py
 
 import json
 import math
+import subprocess
 import time
 
 import torch
@@ -28,6 +29,11 @@ def judge_evaluate_bpb(model, tokenizer, batch_size):
     Bits per byte — computed entirely outside candidate code.
     The model is called as model(x) with NO targets, returning logits.
     Cross-entropy is computed here by the judge, not by the candidate.
+
+    NOTE: This intentionally duplicates the BPB accumulation logic from
+    prepare.evaluate_bpb. The divergence is that we never pass targets
+    to the model. If prepare.evaluate_bpb changes its accumulation math,
+    this function must be updated to match.
     """
     token_bytes = get_token_bytes(device="cuda")
     val_loader = make_dataloader(tokenizer, batch_size, MAX_SEQ_LEN, "val")
@@ -56,16 +62,25 @@ def judge_evaluate_bpb(model, tokenizer, batch_size):
 
 
 def verify_surface():
-    """Check that only train.py was modified between parent and child commits."""
-    import subprocess
+    """Check that only train.py was modified between parent and child commits.
+    Fail-closed: returns False if the check cannot be performed."""
+    # Check if HEAD has a parent (first commit has none)
+    has_parent = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD~1"],
+        capture_output=True,
+    ).returncode == 0
+    if not has_parent:
+        print("NOTE: first commit (no parent) — surface check skipped.")
+        return True
+
     try:
         changed = subprocess.check_output(
             ["git", "diff", "--name-only", "HEAD~1", "HEAD"],
             text=True, stderr=subprocess.DEVNULL,
         ).strip().split("\n")
     except Exception:
-        print("WARNING: could not verify edit surface (no git history?)")
-        return True
+        print("SURFACE CHECK FAILED: could not run git diff. Failing closed.")
+        return False
 
     forbidden = [f for f in changed if f and f != "train.py"]
     if forbidden:
