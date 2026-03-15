@@ -93,7 +93,6 @@ def main():
     args = parser.parse_args()
 
     cfg = load_project(args.project)
-    cfg["_yaml_path"] = args.project or os.environ.get("ZIMZUM_PROJECT", "projects/gpt_pretrain/project.yaml")
     metric_name = cfg["primary_metric"]
     n = args.runs
 

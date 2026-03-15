@@ -37,9 +37,15 @@ def main():
         config_dict = json.load(f)
 
     # Dynamically import model class from project's model module
-    model_mod = importlib.import_module(cfg["model_module"])
-    ModelClass = getattr(model_mod, cfg["model_class"])
-    ConfigClass = getattr(model_mod, cfg["config_class"])
+    try:
+        model_mod = importlib.import_module(cfg["model_module"])
+        ModelClass = getattr(model_mod, cfg["model_class"])
+        ConfigClass = getattr(model_mod, cfg["config_class"])
+    except (ModuleNotFoundError, AttributeError) as e:
+        print(f"JUDGE ERROR: failed to load model: {e}")
+        with open(cfg["metrics"], "w") as f:
+            json.dump({cfg["primary_metric"]: None, "status": "judge_error", "error": str(e)}, f, indent=2)
+        return
 
     device = torch.device("cuda")
     config = ConfigClass(**config_dict)
@@ -55,9 +61,15 @@ def main():
     print(f"Model loaded in {time.time() - t0:.1f}s, running eval...")
 
     # Dynamically import and call project's evaluate function
-    eval_mod = importlib.import_module(cfg["eval_module"])
-    eval_fn = getattr(eval_mod, cfg["eval_fn"])
-    metric_value = eval_fn(model, cfg)
+    try:
+        eval_mod = importlib.import_module(cfg["eval_module"])
+        eval_fn = getattr(eval_mod, cfg["eval_fn"])
+        metric_value = eval_fn(model, cfg)
+    except Exception as e:
+        print(f"JUDGE ERROR: evaluation failed: {e}")
+        with open(cfg["metrics"], "w") as f:
+            json.dump({cfg["primary_metric"]: None, "status": "judge_error", "error": str(e)}, f, indent=2)
+        return
 
     t1 = time.time()
     metric_name = cfg["primary_metric"]

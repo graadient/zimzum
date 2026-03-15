@@ -11,10 +11,9 @@ Usage:
 import argparse
 import json
 import sqlite3
-import subprocess
 import time
 
-from .config import load_project
+from .config import git, load_project
 
 DB_PATH = "experiments.db"
 OUTCOMES = ["keep", "discard", "crash"]
@@ -59,15 +58,6 @@ def init_db(path=DB_PATH):
     return conn
 
 
-def _git(*args):
-    try:
-        return subprocess.check_output(
-            ["git", *args], text=True, stderr=subprocess.DEVNULL
-        ).strip()
-    except Exception:
-        return None
-
-
 def _load_metrics(path="metrics.json"):
     try:
         with open(path) as f:
@@ -86,13 +76,13 @@ def record_experiment(conn, cfg, hypothesis, category, outcome, notes=None):
     extra = {display: metrics.get(key) for display, key in extra_cfg.items() if metrics.get(key) is not None}
 
     row = {
-        "run_tag": _git("rev-parse", "--abbrev-ref", "HEAD"),
-        "parent_commit": _git("rev-parse", "--short", "HEAD~1"),
-        "child_commit": _git("rev-parse", "--short", "HEAD"),
+        "run_tag": git("rev-parse", "--abbrev-ref", "HEAD"),
+        "parent_commit": git("rev-parse", "--short", "HEAD~1"),
+        "child_commit": git("rev-parse", "--short", "HEAD"),
         "hypothesis": hypothesis,
         "category": category,
-        "patch": _git("diff", "HEAD~1", "HEAD"),
-        "started_at": metrics.get("total_seconds", None) and (now - metrics["total_seconds"]),
+        "patch": git("diff", "HEAD~1", "HEAD"),
+        "started_at": (now - metrics["total_seconds"]) if metrics.get("total_seconds") else None,
         "finished_at": now,
         "exit_status": 0 if outcome != "crash" else 1,
         "primary_metric": metrics.get(metric_name),
