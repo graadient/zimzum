@@ -56,7 +56,16 @@ def run_once(run_idx):
         return None
 
     with open(metrics_path) as f:
-        val = json.load(f).get("val_bpb")
+        metrics = json.load(f)
+    val = metrics.get("val_bpb")
+    if val is None:
+        status = metrics.get("status", "unknown")
+        error = metrics.get("error")
+        message = f"  Run {run_idx}: judge produced no val_bpb (status={status})"
+        if error:
+            message += f": {error}"
+        print(message)
+        return None
     print(f"  Run {run_idx}: val_bpb = {val:.6f} ({time.time() - t0:.0f}s)")
     return val
 

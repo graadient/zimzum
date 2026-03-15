@@ -1,16 +1,16 @@
 """
 zimzum experiment database.
-Stores experiments and episodes in SQLite. Lives at repo root,
-outside autoresearch/ so git operations there don't touch it.
+Stores inner-loop experiments and outer-loop episodes in SQLite.
+Lives at repo root, outside autoresearch/ so git operations there don't touch it.
 
-Usage (from repo root):
-    python db.py record --hypothesis "try SiLU" --outcome keep
+Usage:
+    RUN_TAG=ep-001 python db.py record --hypothesis "try SiLU" --outcome keep
     python db.py show
-    python db.py show --outcome keep --sort val_bpb
     python db.py score-episode --tag ep-001
 """
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
@@ -18,8 +18,8 @@ import subprocess
 import time
 
 DB_PATH = "experiments.db"
-OUTCOMES = ["keep", "discard", "crash"]
 PROJECT_DIR = "autoresearch"
+OUTCOMES = ["keep", "discard", "crash"]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS experiments (
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     tag             TEXT UNIQUE,
     base_commit     TEXT,
-    policy_commit   TEXT,
+    policy_hash     TEXT,
     baseline_bpb    REAL,
     best_bpb        REAL,
     score           REAL,
@@ -92,11 +92,25 @@ def _load_metrics():
         return {}
 
 
+def _policy_hash():
+    """Hash the policy section of program.md for episode tracking."""
+    try:
+        with open("program.md") as f:
+            content = f.read()
+        # Hash just the policy block (everything before "## ")
+        policy = content.split("\n## ")[0] if "\n## " in content else content
+        return hashlib.sha256(policy.encode()).hexdigest()[:12]
+    except FileNotFoundError:
+        return None
+
+
 def record(conn, hypothesis, category, outcome, run_tag=None, notes=None):
+    """Record an inner-loop experiment."""
+    tag = run_tag or os.environ.get("RUN_TAG") or _git("rev-parse", "--abbrev-ref", "HEAD")
     metrics = _load_metrics()
     now = time.time()
     row = {
-        "run_tag": run_tag or _git("rev-parse", "--abbrev-ref", "HEAD"),
+        "run_tag": tag,
         "parent_commit": _git("rev-parse", "--short", "HEAD~1"),
         "child_commit": _git("rev-parse", "--short", "HEAD"),
         "hypothesis": hypothesis,
@@ -160,37 +174,49 @@ def show(conn, outcome=None, sort="id", last=None):
 
 
 def score_episode(conn, tag):
-    """Score an episode: baseline_bpb - best_bpb for experiments with this run_tag."""
-    branch = f"zimzum/{tag}"
+    """Score an episode by its run_tag. Populates the episodes table."""
     cursor = conn.execute(
-        "SELECT val_bpb, outcome FROM experiments WHERE run_tag = ? ORDER BY id",
-        [branch],
+        "SELECT val_bpb, outcome, parent_commit, started_at, finished_at "
+        "FROM experiments WHERE run_tag = ? ORDER BY id",
+        [tag],
     )
     rows = cursor.fetchall()
     if not rows:
-        print(f"No experiments for {branch}.")
+        print(f"No experiments for tag '{tag}'.")
         return None
 
-    keeps = [bpb for bpb, outcome in rows if outcome == "keep" and bpb is not None]
-    discards = sum(1 for _, outcome in rows if outcome == "discard")
-    crashes = sum(1 for _, outcome in rows if outcome == "crash")
+    keeps = [bpb for bpb, outcome, *_ in rows if outcome == "keep" and bpb is not None]
+    discards = sum(1 for _, outcome, *_ in rows if outcome == "discard")
+    crashes = sum(1 for _, outcome, *_ in rows if outcome == "crash")
     best_bpb = min(keeps) if keeps else None
-
-    # Get baseline from first keep (the baseline run)
     baseline_bpb = keeps[0] if keeps else None
-    score = (baseline_bpb - best_bpb) if baseline_bpb and best_bpb else None
+    score = (
+        baseline_bpb - best_bpb
+        if baseline_bpb is not None and best_bpb is not None
+        else None
+    )
+
+    # Fill episode metadata from experiment rows
+    base_commit = rows[0][2]  # parent_commit of first experiment
+    started_at = rows[0][3]   # started_at of first experiment
+    finished_at = rows[-1][4] # finished_at of last experiment
+    budget_seconds = (finished_at - started_at) if started_at and finished_at else None
 
     conn.execute("""
-        INSERT OR REPLACE INTO episodes (tag, best_bpb, baseline_bpb, score,
-            total_experiments, keeps, discards, crashes, finished_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, [tag, best_bpb, baseline_bpb, score, len(rows), len(keeps), discards, crashes, time.time()])
+        INSERT OR REPLACE INTO episodes
+            (tag, base_commit, policy_hash, baseline_bpb, best_bpb, score,
+             total_experiments, keeps, discards, crashes,
+             budget_seconds, started_at, finished_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [tag, base_commit, _policy_hash(), baseline_bpb, best_bpb, score,
+          len(rows), len(keeps), discards, crashes,
+          budget_seconds, started_at, finished_at])
     conn.commit()
 
     print(f"Episode {tag}: {len(rows)} experiments, {len(keeps)} kept, "
           f"baseline={baseline_bpb}, best={best_bpb}, score={score}")
-    return {"tag": tag, "score": score, "best_bpb": best_bpb, "baseline_bpb": baseline_bpb,
-            "total": len(rows), "keeps": len(keeps), "discards": discards, "crashes": crashes}
+    return {"tag": tag, "score": score, "best_bpb": best_bpb,
+            "baseline_bpb": baseline_bpb, "policy_hash": _policy_hash()}
 
 
 def main():
@@ -201,7 +227,7 @@ def main():
     rec.add_argument("--hypothesis", required=True)
     rec.add_argument("--category", default="unknown")
     rec.add_argument("--outcome", required=True, choices=OUTCOMES)
-    rec.add_argument("--run-tag")
+    rec.add_argument("--run-tag", default=None)
     rec.add_argument("--notes")
 
     sh = sub.add_parser("show")

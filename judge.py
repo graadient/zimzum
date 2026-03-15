@@ -1,45 +1,55 @@
 """
 zimzum judge — scores a checkpoint honestly.
-Runs inside autoresearch/ to access train.py and prepare.py imports.
+Runs from inside autoresearch/ so train.py and prepare.py are importable.
 Calls model(x) for logits only — eval targets never touch candidate code.
 
-Usage: cd autoresearch && python ../judge.py
+Usage: cd autoresearch && uv run python ../judge.py
 """
 
 import json
 import math
+import os
 import subprocess
+import sys
 import time
+
+# Ensure cwd is on the import path (not the script's directory)
+sys.path.insert(0, os.getcwd())
 
 import torch
 import torch.nn.functional as F
 
 
 def verify_surface(mutable_files):
-    """Check only allowed files were modified. Fail-closed."""
+    """Check only allowed files were modified or appeared. Fail-closed.
+    Checks committed diffs, dirty tracked files, AND untracked files."""
     has_parent = subprocess.run(
         ["git", "rev-parse", "--verify", "HEAD~1"], capture_output=True
     ).returncode == 0
-    if not has_parent:
-        return True  # first commit, nothing to check
 
     try:
-        out = subprocess.check_output(
-            ["git", "diff", "--name-only", "HEAD~1", "HEAD"],
+        changed = set()
+        if has_parent:
+            # Committed changes
+            out = subprocess.check_output(
+                ["git", "diff", "--name-only", "HEAD~1", "HEAD"],
+                text=True, stderr=subprocess.DEVNULL,
+            ).strip()
+            changed.update(f for f in out.split("\n") if f)
+        # Dirty tracked + untracked files via git status
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"],
             text=True, stderr=subprocess.DEVNULL,
         ).strip()
-        # Also check dirty working tree
-        dirty = subprocess.check_output(
-            ["git", "diff", "--name-only"],
-            text=True, stderr=subprocess.DEVNULL,
-        ).strip()
+        for line in status.split("\n"):
+            if line and len(line) > 3:
+                changed.add(line[3:].strip())
     except Exception:
         print("SURFACE CHECK FAILED: git error. Failing closed.")
         return False
 
-    all_changed = set((out + "\n" + dirty).strip().split("\n")) - {""}
     allowed = set(mutable_files)
-    forbidden = [f for f in all_changed if f not in allowed]
+    forbidden = [f for f in changed if f not in allowed]
     if forbidden:
         print(f"SURFACE VIOLATION: {forbidden}")
         return False
