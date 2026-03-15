@@ -1,17 +1,17 @@
 """
-zimzum episode runner — runs one scored inner-loop session.
-Resets the inner repo to a clean baseline, runs the inner agent for a
-fixed budget, and reports the episode outcome.
+zimzum episode runner — sets up and scores inner-loop sessions.
+Does not launch the inner agent — the outer agent or human does that.
 
-Usage: python episode.py --repo /path/to/autoresearch --budget 2h --tag ep-001
+Usage:
+    python episode.py --repo /path/to/autoresearch --tag ep-001 --budget 2h
+    python episode.py --repo /path/to/autoresearch --tag ep-001 --score
 """
 
 import argparse
 import json
 import os
-import shutil
+import sqlite3
 import subprocess
-import sys
 import time
 
 
@@ -25,30 +25,24 @@ def git(repo, *args):
 
 
 def run_episode(repo, budget_seconds, tag):
-    """Run one inner-loop episode and return the outcome."""
+    """Set up an episode branch and record baseline state."""
     t0 = time.time()
 
-    # Record baseline val_bpb from the current best in the repo
-    baseline_metrics = os.path.join(repo, "metrics.json")
     baseline_bpb = None
-    if os.path.exists(baseline_metrics):
+    baseline_metrics = os.path.join(repo, "metrics.json")
+    try:
         with open(baseline_metrics) as f:
-            m = json.load(f)
-        baseline_bpb = m.get("val_bpb")
+            baseline_bpb = json.load(f).get("val_bpb")
+    except FileNotFoundError:
+        pass
 
-    # Create episode branch from current HEAD
     baseline_commit = git(repo, "rev-parse", "--short", "HEAD")
     branch = f"zimzum/{tag}"
     git(repo, "checkout", "-b", branch)
 
     print(f"Episode {tag}: baseline={baseline_bpb}, commit={baseline_commit}, budget={budget_seconds}s")
-
-    # The inner loop is driven by the agent reading program.md in the repo.
-    # We don't run it here — the agent runs it externally.
-    # This script just sets up and tears down the episode.
     print(f"Episode branch '{branch}' created. Run the inner agent now.")
-    print(f"When done (or after {budget_seconds}s), run:")
-    print(f"  python episode.py --repo {repo} --tag {tag} --score")
+    print(f"When done, run:  python episode.py --repo {repo} --tag {tag} --score")
 
     return {
         "tag": tag,
@@ -61,22 +55,25 @@ def run_episode(repo, budget_seconds, tag):
 
 
 def score_episode(repo, tag):
-    """Score a completed episode by reading its experiments.db."""
+    """Score a completed episode by reading its experiments.db.
+    Filters by run_tag to only count experiments from this episode."""
     db_path = os.path.join(repo, "experiments.db")
-    if not os.path.exists(db_path):
-        print(f"No experiments.db found in {repo}")
-        return None
+    branch = f"zimzum/{tag}"
 
-    import sqlite3
     conn = sqlite3.connect(db_path)
+    # Ensure table exists (may be empty if no experiments ran)
+    conn.execute("""CREATE TABLE IF NOT EXISTS experiments (
+        id INTEGER PRIMARY KEY, run_tag TEXT, val_bpb REAL, outcome TEXT
+    )""")
     cursor = conn.execute(
-        "SELECT val_bpb, outcome FROM experiments ORDER BY id"
+        "SELECT val_bpb, outcome FROM experiments WHERE run_tag = ? ORDER BY id",
+        [branch],
     )
     rows = cursor.fetchall()
     conn.close()
 
     if not rows:
-        print("No experiments recorded.")
+        print(f"No experiments recorded for {branch}.")
         return None
 
     keeps = [(bpb, outcome) for bpb, outcome in rows if outcome == "keep" and bpb is not None]
@@ -86,6 +83,7 @@ def score_episode(repo, tag):
 
     result = {
         "tag": tag,
+        "branch": branch,
         "total_experiments": len(rows),
         "keeps": len(keeps),
         "discards": discards,
@@ -112,7 +110,6 @@ def main():
                 json.dump(result, f, indent=2)
             print(f"Written to episode_{args.tag}.json")
     else:
-        # Parse budget
         budget_str = args.budget
         if budget_str.endswith("h"):
             budget_seconds = int(float(budget_str[:-1]) * 3600)
