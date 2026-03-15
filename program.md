@@ -40,6 +40,9 @@ Apply these knobs as follows:
 
 **Before proposing**: check history to avoid retrying failed approaches.
 
+Set `RUN_TAG` at the start of each episode so all experiments are tagged consistently:
+`export RUN_TAG=ep-001` (or whatever the current episode tag is).
+
 LOOP FOREVER:
 
 1. `python db.py show --last 20` — check what's been tried.
@@ -50,7 +53,7 @@ LOOP FOREVER:
 6. `cd autoresearch && uv run python ../judge.py >> run.log 2>&1 && cd ..`
 7. `cat autoresearch/metrics.json` — check val_bpb.
 8. If improvement > noise_threshold: keep. If rerun_winner is true and margin < 2x noise_threshold: rerun once first.
-9. `python db.py record --hypothesis "<desc>" --category <cat> --outcome <keep|discard|crash>`
+9. `RUN_TAG=$RUN_TAG python db.py record --hypothesis "<desc>" --category <cat> --outcome <keep|discard|crash>`
 10. If improved: commit stays.
 11. If not: `cd autoresearch && git reset --hard HEAD~1 && cd ..`
 

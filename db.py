@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS experiments (
     num_steps       INTEGER,
     num_params_M    REAL,
     depth           INTEGER,
+    policy_hash     TEXT,
     outcome         TEXT,
     notes           TEXT
 );
@@ -47,6 +48,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     tag             TEXT UNIQUE,
     base_commit     TEXT,
+    policy_commit   TEXT,
     policy_hash     TEXT,
     baseline_bpb    REAL,
     best_bpb        REAL,
@@ -70,8 +72,26 @@ SORTABLE = {
 def init_db(path=DB_PATH):
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    _migrate_schema(conn)
     conn.commit()
     return conn
+
+
+def _column_names(conn, table):
+    cursor = conn.execute(f"PRAGMA table_info({table})")
+    return {row[1] for row in cursor.fetchall()}
+
+
+def _add_column_if_missing(conn, table, column_def):
+    column_name = column_def.split()[0]
+    if column_name not in _column_names(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+
+
+def _migrate_schema(conn):
+    _add_column_if_missing(conn, "experiments", "policy_hash TEXT")
+    _add_column_if_missing(conn, "episodes", "policy_commit TEXT")
+    _add_column_if_missing(conn, "episodes", "policy_hash TEXT")
 
 
 def _git(*args):
@@ -93,15 +113,14 @@ def _load_metrics():
 
 
 def _policy_hash():
-    """Hash the policy section of program.md for episode tracking."""
+    """Hash the current policy text for experiment-time attribution."""
     try:
         with open("program.md") as f:
             content = f.read()
-        # Hash just the policy block (everything before "## ")
-        policy = content.split("\n## ")[0] if "\n## " in content else content
-        return hashlib.sha256(policy.encode()).hexdigest()[:12]
     except FileNotFoundError:
         return None
+    policy_block = content.split("\n## ", 1)[0]
+    return hashlib.sha256(policy_block.encode()).hexdigest()[:12]
 
 
 def record(conn, hypothesis, category, outcome, run_tag=None, notes=None):
@@ -125,6 +144,7 @@ def record(conn, hypothesis, category, outcome, run_tag=None, notes=None):
         "num_steps": metrics.get("num_steps"),
         "num_params_M": metrics.get("num_params_M"),
         "depth": metrics.get("depth"),
+        "policy_hash": _policy_hash(),
         "outcome": outcome,
         "notes": notes,
     }
@@ -146,10 +166,12 @@ def show(conn, outcome=None, sort="id", last=None):
     if outcome:
         query += " WHERE outcome = ?"
         params.append(outcome)
-    query += f" ORDER BY {sort}"
     if last:
-        query += " DESC LIMIT ?"
+        # --last N always returns the N most recent experiments
+        query += " ORDER BY id DESC LIMIT ?"
         params.append(last)
+    else:
+        query += f" ORDER BY {sort}"
     cursor = conn.execute(query, params)
     cols = [d[0] for d in cursor.description]
     rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
@@ -175,8 +197,12 @@ def show(conn, outcome=None, sort="id", last=None):
 
 def score_episode(conn, tag):
     """Score an episode by its run_tag. Populates the episodes table."""
+    experiment_columns = _column_names(conn, "experiments")
+    has_experiment_policy_hash = "policy_hash" in experiment_columns
+    policy_hash_sql = ", policy_hash" if has_experiment_policy_hash else ""
     cursor = conn.execute(
-        "SELECT val_bpb, outcome, parent_commit, started_at, finished_at "
+        "SELECT val_bpb, outcome, parent_commit, started_at, finished_at"
+        f"{policy_hash_sql} "
         "FROM experiments WHERE run_tag = ? ORDER BY id",
         [tag],
     )
@@ -185,9 +211,9 @@ def score_episode(conn, tag):
         print(f"No experiments for tag '{tag}'.")
         return None
 
-    keeps = [bpb for bpb, outcome, *_ in rows if outcome == "keep" and bpb is not None]
-    discards = sum(1 for _, outcome, *_ in rows if outcome == "discard")
-    crashes = sum(1 for _, outcome, *_ in rows if outcome == "crash")
+    keeps = [row[0] for row in rows if row[1] == "keep" and row[0] is not None]
+    discards = sum(1 for row in rows if row[1] == "discard")
+    crashes = sum(1 for row in rows if row[1] == "crash")
     best_bpb = min(keeps) if keeps else None
     baseline_bpb = keeps[0] if keeps else None
     score = (
@@ -197,18 +223,27 @@ def score_episode(conn, tag):
     )
 
     # Fill episode metadata from experiment rows
-    base_commit = rows[0][2]  # parent_commit of first experiment
-    started_at = rows[0][3]   # started_at of first experiment
-    finished_at = rows[-1][4] # finished_at of last experiment
-    budget_seconds = (finished_at - started_at) if started_at and finished_at else None
+    base_commit = rows[0][2]
+    started_at = rows[0][3]
+    finished_at = rows[-1][4]
+    budget_seconds = (
+        finished_at - started_at
+        if started_at is not None and finished_at is not None
+        else None
+    )
+
+    policy_hashes = set()
+    if has_experiment_policy_hash:
+        policy_hashes = {row[5] for row in rows if row[5]}
+    policy_hash = next(iter(policy_hashes)) if len(policy_hashes) == 1 else None
 
     conn.execute("""
         INSERT OR REPLACE INTO episodes
-            (tag, base_commit, policy_hash, baseline_bpb, best_bpb, score,
+            (tag, base_commit, policy_commit, policy_hash, baseline_bpb, best_bpb, score,
              total_experiments, keeps, discards, crashes,
              budget_seconds, started_at, finished_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, [tag, base_commit, _policy_hash(), baseline_bpb, best_bpb, score,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [tag, base_commit, None, policy_hash, baseline_bpb, best_bpb, score,
           len(rows), len(keeps), discards, crashes,
           budget_seconds, started_at, finished_at])
     conn.commit()
@@ -216,7 +251,7 @@ def score_episode(conn, tag):
     print(f"Episode {tag}: {len(rows)} experiments, {len(keeps)} kept, "
           f"baseline={baseline_bpb}, best={best_bpb}, score={score}")
     return {"tag": tag, "score": score, "best_bpb": best_bpb,
-            "baseline_bpb": baseline_bpb, "policy_hash": _policy_hash()}
+            "baseline_bpb": baseline_bpb, "policy_hash": policy_hash}
 
 
 def main():

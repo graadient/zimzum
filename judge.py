@@ -19,6 +19,8 @@ sys.path.insert(0, os.getcwd())
 import torch
 import torch.nn.functional as F
 
+GENERATED_ARTIFACTS = {"checkpoint.pt", "checkpoint_config.json", "metrics.json"}
+
 
 def verify_surface(mutable_files):
     """Check only allowed files were modified or appeared. Fail-closed.
@@ -48,7 +50,7 @@ def verify_surface(mutable_files):
         print("SURFACE CHECK FAILED: git error. Failing closed.")
         return False
 
-    allowed = set(mutable_files)
+    allowed = set(mutable_files) | GENERATED_ARTIFACTS
     forbidden = [f for f in changed if f not in allowed]
     if forbidden:
         print(f"SURFACE VIOLATION: {forbidden}")
