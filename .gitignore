@@ -19,5 +19,12 @@ AGENTS.md
 # Experimental code/artifacts
 dev/
 
-# Results file
+# Results and artifacts
 results.tsv
+checkpoint.pt
+checkpoint_config.json
+metrics.json
+noise_results.json
+noise_run_*.log
+*.log
+run.log

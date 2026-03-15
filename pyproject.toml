@@ -1,7 +1,7 @@
 [project]
-name = "autoresearch"
+name = "zimzum"
 version = "0.1.0"
-description = "Autonomous pretraining research swarm"
+description = "An autoresearcher that optimises itself"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
