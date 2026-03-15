@@ -7,5 +7,7 @@ checkpoint_config.json
 metrics.json
 noise_results.json
 noise_run_*.log
+episode_*.json
 *.log
 run.log
+autoresearch/
