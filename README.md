@@ -2,65 +2,60 @@
 
 An autoresearcher that optimises itself.
 
-[karpathy/autoresearch](https://github.com/karpathy/autoresearch) uses an LLM to optimize a training script. zimzum uses an LLM to optimize the research policy that controls that LLM. Same loop structure, one level up.
+[karpathy/autoresearch](https://github.com/karpathy/autoresearch) uses an LLM to optimize a training script. zimzum uses an LLM to optimize the research policy that controls that LLM. Same loop, one level up.
 
 ```
-outer loop (zimzum):   edits program.md    → measures improvement per GPU-hour
-  inner loop (karpathy): edits train.py    → measures val_bpb
+outer loop: edits program.md policy → measures improvement per episode
+  inner loop: edits train.py       → measures val_bpb
 ```
 
-## What's in this repo
+## Structure
 
 ```
-program.md     ← outer loop instructions (how to optimize the research policy)
-episode.py     ← runs one scored inner-loop session
-judge.py       ← scores checkpoints honestly (targets never touch candidate code)
-db.py          ← stores every experiment in SQLite (survives git reset)
-noise.py       ← measures noise floor and minimum detectable effect
+zimzum/
+  program.md          ← policy + instructions (outer loop edits policy, inner loop follows instructions)
+  judge.py            ← honest checkpoint scoring (targets never touch candidate code)
+  db.py               ← experiments + episodes in SQLite (survives git reset)
+  noise.py            ← noise floor calibration
+
+  autoresearch/       ← karpathy/autoresearch (forked, minimal modifications)
+    train.py          ← inner agent edits this (modified: checkpoint saving + __main__ guard)
+    prepare.py        ← untouched
+    program.md        ← karpathy's original (reference only)
+    pyproject.toml    ← untouched
 ```
 
-## How the two loops interact
-
-The outer agent's mutable surface is `autoresearch/program.md` — the inner agent's research strategy. The inner agent's mutable surface is `autoresearch/train.py` — the model code. Neither can touch the other's file. Neither can touch the judge or eval harness.
-
-```
-IMMUTABLE (neither loop touches):
-  prepare.py       data, tokenizer, evaluation
-  judge.py         honest checkpoint scoring
-
-OUTER LOOP edits:
-  program.md       the inner agent's research strategy
-
-INNER LOOP edits:
-  train.py         the model, optimizer, training code
-```
-
-Each episode starts from a clean baseline. The outer loop's edit to `program.md` is the only variable. This is a controlled experiment.
+Our code: `program.md`, `judge.py`, `db.py`, `noise.py` (4 files at root).
+Karpathy's code: everything in `autoresearch/` (train.py modified minimally).
 
 ## Quick start
 
 ```bash
-# Clone the target project
-git clone https://github.com/karpathy/autoresearch
 cd autoresearch && uv sync && uv run prepare.py && cd ..
 
-# Clone zimzum
-git clone https://github.com/graadient/zimzum
-
-# Copy harness files into autoresearch
-cp zimzum/judge.py zimzum/db.py zimzum/noise.py autoresearch/
-
-# Point the outer agent at zimzum/program.md
-# Point the inner agent at autoresearch/program.md
+# Inner loop: one experiment
+cd autoresearch
+uv run train.py > run.log 2>&1
+python ../judge.py
+cat metrics.json
+cd ..
+python db.py record --hypothesis "baseline" --category other --outcome keep
 ```
 
-## The objective
+Point an inner agent at `program.md` and it follows the inner loop instructions.
+Point an outer agent at `program.md` and it edits the policy section.
 
-The repo's job is to find the `program.md` that produces the most val_bpb improvement per GPU-hour when an inner agent follows it. That optimized research policy can then be applied to any autoresearch-compatible project.
+## Methodology
+
+- Inner loop: n=1 per experiment (Karpathy's default, fast, self-correcting)
+- Outer loop: n=2 per policy change (both episodes must beat baseline)
+- One policy knob changed per outer iteration (credit assignment)
+- All experiments preserved in `experiments.db` (winners, losers, crashes)
+- History checked before each experiment (avoid retrying failures)
 
 ## Acknowledgments
 
-- [Andrej Karpathy](https://github.com/karpathy) — autoresearch (the inner loop)
+- [Andrej Karpathy](https://github.com/karpathy) — autoresearch
 
 ## License
 

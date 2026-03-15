@@ -1,6 +1,6 @@
 """
-zimzum noise measurement — runs train + judge N times to measure
-the noise floor and compute minimum detectable effect size.
+zimzum noise measurement. Runs train + judge N times from autoresearch/
+to measure val_bpb variance and compute minimum detectable effect.
 
 Usage: python noise.py --runs 3
 """
@@ -13,71 +13,52 @@ import subprocess
 import sys
 import time
 
+PROJECT_DIR = "autoresearch"
 
-def run_experiment(run_idx):
+
+def run_once(run_idx):
     log_file = f"noise_run_{run_idx}.log"
 
     for f in ["checkpoint.pt", "checkpoint_config.json", "metrics.json"]:
         try:
-            os.remove(f)
+            os.remove(os.path.join(PROJECT_DIR, f))
         except FileNotFoundError:
             pass
 
     print(f"  Run {run_idx}: training...", flush=True)
     t0 = time.time()
     result = subprocess.run(
-        ["uv", "run", "train.py"],
+        ["uv", "run", "train.py"], cwd=PROJECT_DIR,
         capture_output=True, text=True, timeout=900,
     )
     with open(log_file, "w") as f:
-        f.write(result.stdout)
-        f.write(result.stderr)
+        f.write(result.stdout + result.stderr)
 
     if result.returncode != 0:
-        print(f"  Run {run_idx}: training crashed (exit {result.returncode})")
+        print(f"  Run {run_idx}: train crashed")
         return None
 
-    if not os.path.exists("metrics.json"):
-        print(f"  Run {run_idx}: no metrics.json produced")
+    metrics_path = os.path.join(PROJECT_DIR, "metrics.json")
+    if not os.path.exists(metrics_path):
+        print(f"  Run {run_idx}: no metrics.json")
         return None
 
-    print(f"  Run {run_idx}: evaluating...", flush=True)
+    print(f"  Run {run_idx}: judging...", flush=True)
     result = subprocess.run(
-        ["uv", "run", "judge.py"],
+        ["python", "../judge.py"], cwd=PROJECT_DIR,
         capture_output=True, text=True, timeout=300,
     )
     with open(log_file, "a") as f:
-        f.write(result.stdout)
-        f.write(result.stderr)
+        f.write(result.stdout + result.stderr)
 
     if result.returncode != 0:
-        print(f"  Run {run_idx}: judge crashed (exit {result.returncode})")
+        print(f"  Run {run_idx}: judge crashed")
         return None
 
-    with open("metrics.json") as f:
-        metrics = json.load(f)
-
-    val_bpb = metrics.get("val_bpb")
-    dt = time.time() - t0
-    print(f"  Run {run_idx}: val_bpb = {val_bpb:.6f} ({dt:.0f}s)")
-    return val_bpb
-
-
-def _t_critical(alpha, df):
-    z = _norm_ppf(1 - alpha / 2)
-    g1 = (z**3 + z) / (4 * df)
-    g2 = (5 * z**5 + 16 * z**3 + 3 * z) / (96 * df**2)
-    return z + g1 + g2
-
-
-def _norm_ppf(p):
-    if p <= 0 or p >= 1:
-        return float("inf")
-    t = math.sqrt(-2 * math.log(min(p, 1 - p)))
-    c0, c1, c2 = 2.515517, 0.802853, 0.010328
-    d1, d2, d3 = 1.432788, 0.189269, 0.001308
-    result = t - (c0 + c1 * t + c2 * t**2) / (1 + d1 * t + d2 * t**2 + d3 * t**3)
-    return result if p > 0.5 else -result
+    with open(metrics_path) as f:
+        val = json.load(f).get("val_bpb")
+    print(f"  Run {run_idx}: val_bpb = {val:.6f} ({time.time() - t0:.0f}s)")
+    return val
 
 
 def main():
@@ -91,16 +72,13 @@ def main():
         print("Need at least 2 runs.")
         sys.exit(1)
 
-    print(f"Noise measurement: {n} runs with seed=42")
-    print()
-
+    print(f"Noise measurement: {n} runs")
     values = []
     for i in range(n):
-        val = run_experiment(i)
+        val = run_once(i)
         if val is not None:
             values.append(val)
 
-    print()
     if len(values) < 2:
         print("Too few successful runs.")
         sys.exit(1)
@@ -108,19 +86,18 @@ def main():
     mean = sum(values) / len(values)
     variance = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
     std = math.sqrt(variance)
-    df = len(values) - 1
-    t_crit = _t_critical(args.alpha, df)
-    mde = t_crit * std * math.sqrt(2 / len(values))
 
-    print("Summary:")
-    print(f"  mean:     {mean:.6f}")
-    print(f"  std:      {std:.6f}")
-    print(f"  MDE:      {mde:.6f}")
-    print(f"  (improvements must be > {mde:.6f} val_bpb to beat noise)")
+    # Approximate t-critical (Cornish-Fisher)
+    z = 1.96  # alpha=0.05
+    df = len(values) - 1
+    z += (z**3 + z) / (4 * df) + (5 * z**5 + 16 * z**3 + 3 * z) / (96 * df**2)
+    mde = z * std * math.sqrt(2 / len(values))
+
+    print(f"\nmean={mean:.6f}  std={std:.6f}  MDE={mde:.6f}")
+    print(f"Improvements must be > {mde:.6f} val_bpb to beat noise.")
 
     with open("noise_results.json", "w") as f:
-        json.dump({"mean": mean, "std": std, "mde": mde, "values": values, "alpha": args.alpha}, f, indent=2)
-    print("\nWritten to noise_results.json")
+        json.dump({"mean": mean, "std": std, "mde": mde, "values": values}, f, indent=2)
 
 
 if __name__ == "__main__":

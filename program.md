@@ -1,56 +1,65 @@
-# zimzum — outer loop
+# zimzum
 
-You are optimizing the research policy, not the model. The inner agent optimizes `train.py`. You optimize the instructions the inner agent follows.
+policy:
+  category_order: [architecture, optimizer, hyperparams, regularization, schedule]
+  switch_after_failures: 5
+  rerun_winner: false
+  combine_near_misses: false
+  simplicity_bias: 0.3
+  noise_threshold: 0.001
+  history_mode: summary
 
-## What you edit
+## Roles
 
-**`autoresearch/program.md`** — the inner agent's research strategy. This is your `train.py` equivalent. Everything in it is fair game: how the agent picks experiments, when to explore vs exploit, how to handle near-misses, rerun rules, category priorities, simplicity weights, context format.
+This file serves two purposes depending on who reads it:
 
-## What you don't edit
+**Inner agent**: follow the experiment loop below. Edit only `autoresearch/train.py`.
+**Outer agent**: edit the policy section above. Run two episodes per policy change. Keep only if both episodes improve.
 
-- `autoresearch/train.py` — the inner agent's sandbox (it edits this, not you)
-- `autoresearch/prepare.py` — data, tokenizer, evaluation (immutable)
-- `judge.py` — checkpoint scorer (immutable)
-- `db.py` — experiment database (immutable)
+## Setup
 
-## The metric
+1. `cd autoresearch && uv sync && uv run prepare.py && cd ..`
+2. Run baseline: `cd autoresearch && uv run train.py > run.log 2>&1 && python ../judge.py && cd ..`
+3. Record: `python db.py record --hypothesis "baseline" --category other --outcome keep`
 
-Your metric is **improvement per GPU-hour**: how much did val_bpb drop during an episode, divided by the wall-clock time?
+## Inner loop (edit train.py)
 
-A policy that makes the inner agent more timid (high keep rate, low improvement) scores badly. A policy that makes the inner agent crash constantly also scores badly. The best policy extracts the most val_bpb improvement in the least time.
+**Edit only `autoresearch/train.py`.** Everything else is read-only.
 
-## The loop
+**Goal**: lowest `val_bpb`. Fixed 5-minute training budget.
+
+**Before proposing**: check `python db.py show --last 20` to avoid retrying failed approaches.
 
 LOOP FOREVER:
 
-1. Read the current `autoresearch/program.md` and recent episode results.
-2. Propose a change to `autoresearch/program.md` — a different research strategy.
-3. `git add autoresearch/program.md && git commit -m "policy: <description>"`
-4. Run an episode: `python episode.py --repo autoresearch/ --tag <tag> --budget 2h`
-5. Let the inner agent run for the budget. (It reads program.md and experiments autonomously.)
-6. Score the episode: `python episode.py --repo autoresearch/ --tag <tag> --score`
-7. Compare to baseline episodes.
-8. `python db.py record --hypothesis "<policy description>" --category policy --outcome <keep|discard>`
-9. If improvement per GPU-hour beats baseline: keep the policy change.
-10. If not: `git reset --hard HEAD~1` to revert program.md.
+1. Check history: `python db.py show --last 20`
+2. Edit `autoresearch/train.py` with an idea.
+3. `cd autoresearch && git add train.py && git commit -m "experiment: <desc>" && cd ..`
+4. `cd autoresearch && rm -f checkpoint.pt checkpoint_config.json metrics.json`
+5. `uv run train.py > run.log 2>&1`
+6. If `metrics.json` missing: crashed. Check `tail -n 50 run.log`.
+7. `python ../judge.py >> run.log 2>&1`
+8. `cat metrics.json`
+9. Improvement must exceed noise_threshold to count.
+10. `cd .. && python db.py record --hypothesis "<desc>" --category <cat> --outcome <keep|discard|crash>`
+11. If improved: commit stays.
+12. If not: `cd autoresearch && git reset --hard HEAD~1 && cd ..`
 
-## What to try
+**Simplicity criterion**: simpler is better. Small gain + ugly complexity = not worth it.
 
-- Category ordering: should the inner agent try architecture first, or hyperparams?
-- Plateau detection: "after 5 consecutive failures in one category, switch"
-- Near-miss combining: "if two experiments each almost won, try them together"
-- Rerun confirmation: "rerun winners once to confirm they're real before keeping"
-- Context format: give the inner agent category-level win rates vs raw history
-- Exploration schedules: "explore aggressively for the first hour, then exploit"
-- Simplicity weighting: how much to penalize complexity in keep/discard decisions
-- Failure analysis: "after a crash, try a smaller version of the same idea"
+**NEVER STOP**: work indefinitely until manually stopped.
 
-## Invariants
+## Outer loop (edit this file's policy section)
 
-These hold no matter what you do:
-- The judge (`judge.py`) is immutable. Neither you nor the inner agent can change how val_bpb is computed.
-- `prepare.py` is immutable. The data, tokenizer, and eval function are fixed.
-- Each episode starts from a clean baseline. You can't accumulate hidden advantages.
-- `experiments.db` survives git reset. All evidence is preserved.
+**Edit only the policy section** at the top of this file. Change one knob per iteration.
 
-**NEVER STOP**: Work indefinitely until manually stopped.
+1. Propose a policy change (one knob).
+2. Run two episodes with the new policy. Each episode = inner agent running for a fixed budget.
+3. Run two episodes with the current baseline policy.
+4. Score: `python db.py score-episode --tag <tag>`
+5. Compare. Both candidate episodes must beat both baseline episodes.
+6. `python db.py record --hypothesis "<policy desc>" --category policy --outcome <keep|discard>`
+7. If both episodes beat baseline: keep the policy change.
+8. If not: revert the policy section.
+
+The outer metric is `score = baseline_bpb - best_bpb` per episode. Higher is better.
