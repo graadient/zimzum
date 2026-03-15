@@ -1,26 +1,6 @@
-# Python-generated files
 __pycache__/
 *.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
-worktrees/
-results/
-queue/
-
-# Agent prompt files (generated per-session by launchers)
-CLAUDE.md
-AGENTS.md
-
-# Experimental code/artifacts
-dev/
-
-# Results and artifacts
-results.tsv
+.venv/
 experiments.db
 checkpoint.pt
 checkpoint_config.json
@@ -29,4 +9,3 @@ noise_results.json
 noise_run_*.log
 *.log
 run.log
-program.md

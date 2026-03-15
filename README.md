@@ -2,62 +2,39 @@
 
 An autoresearcher that optimises itself.
 
-The harness (judge, experiment DB, noise measurement, protocol generator) is generic and reusable. The project (model, data, evaluation) is pluggable via `project.yaml`. The harness is the thing the outer loop will eventually optimize. The project is what the inner loop optimizes.
+zimzum is a harness that wraps [karpathy/autoresearch](https://github.com/karpathy/autoresearch) with an honest judge, experiment evidence, and noise measurement. The objective is to optimize the research policy — how the agent picks experiments — and then apply that optimized policy to any autoresearch-compatible project.
 
-Based on [karpathy/autoresearch](https://github.com/karpathy/autoresearch). For Apple Silicon (MLX), see [zimzum-mlx](https://github.com/graadient/zimzum-mlx).
-
-## Structure
+## What's in this repo
 
 ```
-harness/                          # generic, reusable, no project knowledge
-  judge.py                        # loads checkpoint, calls project eval, writes metric
-  db.py                           # SQLite experiment database
-  noise.py                        # noise floor measurement
-  surface.py                      # edit surface verification
-  protocol.py                     # generates program.md from template + project.yaml
-  config.py                       # loads project.yaml
-
-projects/gpt_pretrain/            # one specific research project
-  project.yaml                    # the contract between harness and project
-  model.py                        # model classes (immutable, judge imports from here)
-  train.py                        # candidate sandbox (agent edits this)
-  prepare.py                      # data, tokenizer, dataloader (immutable)
-  evaluate.py                     # evaluation logic (immutable)
+judge.py       ← scores checkpoints honestly (targets never touch candidate code)
+db.py          ← stores every experiment (winners, losers, crashes) in SQLite
+noise.py       ← measures hardware noise floor and minimum detectable effect
+program.md     ← the research policy (the thing we optimize)
 ```
 
-## Quick start
+## How to use it
 
-**Requirements:** NVIDIA GPU, Python 3.10+, [uv](https://docs.astral.sh/uv/).
+1. Clone [karpathy/autoresearch](https://github.com/karpathy/autoresearch)
+2. Drop these files into it
+3. Modify `train.py` to save a checkpoint + write `metrics.json` (instead of calling `evaluate_bpb` inline)
+4. Point an AI agent at `program.md`
 
-```bash
-uv sync
-uv run prepare.py                                                    # one-time data prep
-uv run -m harness.protocol --project projects/gpt_pretrain/project.yaml  # generate program.md
-uv run -m projects.gpt_pretrain.train                                # train + save checkpoint
-uv run -m harness.judge --project projects/gpt_pretrain/project.yaml # independent eval
-cat metrics.json
-```
-
-Then point an AI agent at `program.md` and let it run the loop.
+The agent runs the loop: edit `train.py` → train → judge → keep/revert → repeat.
 
 ## Trust boundary
 
-- The candidate (`train.py`) trains and saves a checkpoint but never reports its own metric.
-- The judge calls `model(x)` for logits only — **eval targets are never passed to candidate code**.
-- The judge imports the model from `model.py` (immutable), not from `train.py` (candidate).
-- The judge verifies only `train.py` was modified (surface check). Forbidden edits are rejected.
-- `experiments.db` is gitignored — `git reset --hard` cannot wipe experiment history.
+- `train.py` saves a checkpoint but never reports its own `val_bpb`
+- `judge.py` calls `model(x)` for logits only — eval targets never touch candidate code
+- `judge.py` verifies only `train.py` was modified (surface check, fail-closed)
+- `experiments.db` is gitignored — `git reset --hard` cannot wipe evidence
+- Improvements must exceed a noise threshold to be promoted
 
-## Adding a new project
+## The objective
 
-Create `projects/your_project/` with:
-- `project.yaml` — configure metric name, commands, model module, eval module, mutable files
-- `model.py` — model definition
-- `train.py` — candidate sandbox
-- `prepare.py` — data pipeline
-- `evaluate.py` — implements `evaluate(model, cfg) -> float`
+The repo's job is **not** to train a better GPT. Karpathy's autoresearch already does that.
 
-The harness works unchanged.
+The repo's job is to **optimize how the research is done** — the policy in `program.md` — and measure whether policy changes lead to better research outcomes. The inner loop (agent edits train.py) is karpathy's. The outer loop (optimizing the research strategy) is ours.
 
 ## License
 

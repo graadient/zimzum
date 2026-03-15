@@ -1,9 +1,8 @@
 """
-Generic noise measurement for zimzum experiments.
-Runs train + judge N times with identical seeds and measures
-variance of the primary metric to establish the noise floor.
+zimzum noise measurement — runs train + judge N times to measure
+the noise floor and compute minimum detectable effect size.
 
-Usage: uv run -m harness.noise --project projects/gpt_pretrain/project.yaml --runs 3
+Usage: python noise.py --runs 3
 """
 
 import argparse
@@ -14,15 +13,11 @@ import subprocess
 import sys
 import time
 
-from .config import load_project
 
-
-def run_experiment(run_idx, cfg):
-    """Run train + judge once and return the primary metric value."""
+def run_experiment(run_idx):
     log_file = f"noise_run_{run_idx}.log"
-    metric_name = cfg["primary_metric"]
 
-    for f in [cfg["checkpoint"], cfg["config"], cfg["metrics"]]:
+    for f in ["checkpoint.pt", "checkpoint_config.json", "metrics.json"]:
         try:
             os.remove(f)
         except FileNotFoundError:
@@ -31,7 +26,7 @@ def run_experiment(run_idx, cfg):
     print(f"  Run {run_idx}: training...", flush=True)
     t0 = time.time()
     result = subprocess.run(
-        cfg["train_cmd"].split(),
+        ["uv", "run", "train.py"],
         capture_output=True, text=True, timeout=900,
     )
     with open(log_file, "w") as f:
@@ -42,13 +37,13 @@ def run_experiment(run_idx, cfg):
         print(f"  Run {run_idx}: training crashed (exit {result.returncode})")
         return None
 
-    if not os.path.exists(cfg["metrics"]):
-        print(f"  Run {run_idx}: no {cfg['metrics']} produced")
+    if not os.path.exists("metrics.json"):
+        print(f"  Run {run_idx}: no metrics.json produced")
         return None
 
     print(f"  Run {run_idx}: evaluating...", flush=True)
     result = subprocess.run(
-        ["uv", "run", "-m", "harness.judge", "--project", cfg["_yaml_path"]],
+        ["uv", "run", "judge.py"],
         capture_output=True, text=True, timeout=300,
     )
     with open(log_file, "a") as f:
@@ -59,16 +54,16 @@ def run_experiment(run_idx, cfg):
         print(f"  Run {run_idx}: judge crashed (exit {result.returncode})")
         return None
 
-    with open(cfg["metrics"]) as f:
+    with open("metrics.json") as f:
         metrics = json.load(f)
 
-    val = metrics.get(metric_name)
+    val_bpb = metrics.get("val_bpb")
     dt = time.time() - t0
-    print(f"  Run {run_idx}: {metric_name} = {val:.6f} ({dt:.0f}s)")
-    return val
+    print(f"  Run {run_idx}: val_bpb = {val_bpb:.6f} ({dt:.0f}s)")
+    return val_bpb
 
 
-def t_critical(alpha, df):
+def _t_critical(alpha, df):
     z = _norm_ppf(1 - alpha / 2)
     g1 = (z**3 + z) / (4 * df)
     g2 = (5 * z**5 + 16 * z**3 + 3 * z) / (96 * df**2)
@@ -86,26 +81,22 @@ def _norm_ppf(p):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Measure noise floor")
-    parser.add_argument("--project", default=None, help="Path to project.yaml")
+    parser = argparse.ArgumentParser(description="Measure val_bpb noise floor")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--alpha", type=float, default=0.05)
     args = parser.parse_args()
 
-    cfg = load_project(args.project)
-    metric_name = cfg["primary_metric"]
     n = args.runs
-
     if n < 2:
         print("Need at least 2 runs.")
         sys.exit(1)
 
-    print(f"Noise measurement: {n} runs, metric={metric_name}")
+    print(f"Noise measurement: {n} runs with seed=42")
     print()
 
     values = []
     for i in range(n):
-        val = run_experiment(i, cfg)
+        val = run_experiment(i)
         if val is not None:
             values.append(val)
 
@@ -118,25 +109,17 @@ def main():
     variance = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
     std = math.sqrt(variance)
     df = len(values) - 1
-    t_crit = t_critical(args.alpha, df)
+    t_crit = _t_critical(args.alpha, df)
     mde = t_crit * std * math.sqrt(2 / len(values))
 
     print("Summary:")
-    print(f"  runs:     {len(values)}/{n}")
     print(f"  mean:     {mean:.6f}")
     print(f"  std:      {std:.6f}")
-    print(f"  variance: {variance:.9f}")
-    print()
-    print(f"MDE (alpha={args.alpha}): {mde:.6f}")
-    print(f"  (improvements must be > {mde:.6f} {metric_name} to beat noise)")
+    print(f"  MDE:      {mde:.6f}")
+    print(f"  (improvements must be > {mde:.6f} val_bpb to beat noise)")
 
-    results = {
-        "metric": metric_name, "n_runs": len(values), "values": values,
-        "mean": mean, "std": std, "variance": variance,
-        "alpha": args.alpha, "mde": mde,
-    }
     with open("noise_results.json", "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump({"mean": mean, "std": std, "mde": mde, "values": values, "alpha": args.alpha}, f, indent=2)
     print("\nWritten to noise_results.json")
 
 
