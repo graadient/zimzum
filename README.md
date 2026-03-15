@@ -2,78 +2,62 @@
 
 An autoresearcher that optimises itself.
 
-Give an AI agent a training script, a fixed compute budget, and a single metric — then let it run autonomously. It edits the code, trains, evaluates, keeps what works, reverts what doesn't, and repeats. The researcher *is* the experiment.
+The harness (judge, experiment DB, noise measurement, protocol generator) is generic and reusable. The project (model, data, evaluation) is pluggable via `project.yaml`. The harness is the thing the outer loop will eventually optimize. The project is what the inner loop optimizes.
 
-Based on [karpathy/autoresearch](https://github.com/karpathy/autoresearch). Single NVIDIA GPU, PyTorch/CUDA. For Apple Silicon (MLX), see [zimzum-mlx](https://github.com/graadient/zimzum-mlx).
+Based on [karpathy/autoresearch](https://github.com/karpathy/autoresearch). For Apple Silicon (MLX), see [zimzum-mlx](https://github.com/graadient/zimzum-mlx).
 
-## How it works
+## Structure
 
-1. The agent reads `program.md` — the autonomous experiment protocol.
-2. It edits `train.py` (architecture, optimizer, hyperparams, anything).
-3. Runs a **fixed 5-minute** training experiment.
-4. `judge.py` independently evaluates the checkpoint — the candidate never scores itself.
-5. **Keeps** improvements, **reverts** failures.
-6. Logs every experiment to `experiments.db` — winners, losers, and crashes.
-7. Repeats indefinitely until stopped.
+```
+harness/                          # generic, reusable, no project knowledge
+  judge.py                        # loads checkpoint, calls project eval, writes metric
+  db.py                           # SQLite experiment database
+  noise.py                        # noise floor measurement
+  surface.py                      # edit surface verification
+  protocol.py                     # generates program.md from template + project.yaml
+  config.py                       # loads project.yaml
+
+projects/gpt_pretrain/            # one specific research project
+  project.yaml                    # the contract between harness and project
+  model.py                        # model classes (immutable, judge imports from here)
+  train.py                        # candidate sandbox (agent edits this)
+  prepare.py                      # data, tokenizer, dataloader (immutable)
+  evaluate.py                     # evaluation logic (immutable)
+```
 
 ## Quick start
 
-**Requirements:** A single NVIDIA GPU (tested on H100), Python 3.10+, [uv](https://docs.astral.sh/uv/).
+**Requirements:** NVIDIA GPU, Python 3.10+, [uv](https://docs.astral.sh/uv/).
 
 ```bash
-# install uv if needed
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# install dependencies
 uv sync
-
-# one-time data + tokenizer prep (~2 min)
-uv run prepare.py
-
-# run one experiment
-uv run train.py          # train + save checkpoint
-uv run judge.py          # independent eval → val_bpb in metrics.json
+uv run prepare.py                                                    # one-time data prep
+uv run -m harness.protocol --project projects/gpt_pretrain/project.yaml  # generate program.md
+uv run -m projects.gpt_pretrain.train                                # train + save checkpoint
+uv run -m harness.judge --project projects/gpt_pretrain/project.yaml # independent eval
 cat metrics.json
 ```
 
-Then point Claude Code (or another coding agent) at `program.md` and let it run the loop.
-
-## Files
-
-- `program.md` — the autonomous experiment protocol (agent instructions)
-- `train.py` — model, optimizer, training loop (the only file the agent edits)
-- `prepare.py` — data prep, tokenizer, dataloader, evaluation (fixed, read-only)
-- `judge.py` — independent evaluator (fixed, read-only)
-- `db.py` — experiment database (fixed, read-only)
-- `measure_noise.py` — noise floor measurement
+Then point an AI agent at `program.md` and let it run the loop.
 
 ## Trust boundary
 
-The candidate (`train.py`) trains and saves a checkpoint but never reports its own `val_bpb`. The judge calls `model(x)` to get logits — **eval targets are never passed to candidate code**. Cross-entropy loss is computed entirely inside `judge.py`. The agent reads structured `metrics.json`, not its own stdout.
-
-Additional safeguards:
-- `judge.py` verifies only `train.py` was modified (surface check). If `prepare.py`, `judge.py`, or `db.py` were touched, the run is rejected.
+- The candidate (`train.py`) trains and saves a checkpoint but never reports its own metric.
+- The judge calls `model(x)` for logits only — **eval targets are never passed to candidate code**.
+- The judge imports the model from `model.py` (immutable), not from `train.py` (candidate).
+- The judge verifies only `train.py` was modified (surface check). Forbidden edits are rejected.
 - `experiments.db` is gitignored — `git reset --hard` cannot wipe experiment history.
-- Improvements must exceed a noise threshold (default 0.001 val_bpb) to be kept.
 
-## Noise measurement
+## Adding a new project
 
-Before trusting results, measure your hardware's noise floor:
+Create `projects/your_project/` with:
+- `project.yaml` — configure metric name, commands, model module, eval module, mutable files
+- `model.py` — model definition
+- `train.py` — candidate sandbox
+- `prepare.py` — data pipeline
+- `evaluate.py` — implements `evaluate(model, cfg) -> float`
 
-```bash
-uv run measure_noise.py --runs 3
-```
-
-This runs the same code 3 times with the same seed and reports the minimum detectable effect size — how large an improvement must be to beat hardware nondeterminism.
-
-## Origin
-
-zimzum is a fork of [karpathy/autoresearch](https://github.com/karpathy/autoresearch), with an immutable judge, experiment database, and noise measurement layered on top.
-
-## Acknowledgments
-
-- [Andrej Karpathy](https://github.com/karpathy) — autoresearch and nanochat (the original concept)
-- [Apple MLX team](https://github.com/ml-explore/mlx) — MLX variant lives at [zimzum-mlx](https://github.com/graadient/zimzum-mlx)
+The harness works unchanged.
 
 ## License
 
